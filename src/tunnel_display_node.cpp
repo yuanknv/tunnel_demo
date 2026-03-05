@@ -265,16 +265,26 @@ private:
   }
 
   // Pipe raw RGB frames to ffmpeg for MP4 recording.
+  // Throttled to 60 fps to avoid D2H copy overhead on every frame.
   // The ffmpeg subprocess is spawned lazily on the first frame so the
   // actual resolution is known.
   void record_frame(const at::Tensor & tensor, int w, int h)
   {
+    auto now = std::chrono::steady_clock::now();
+    if (last_record_time_.time_since_epoch().count() > 0) {
+      double elapsed_ms = std::chrono::duration<double, std::milli>(
+        now - last_record_time_).count();
+      if (elapsed_ms < 16.0) return;
+    }
+    last_record_time_ = now;
+
     if (!ffmpeg_pipe_) {
       std::string cmd =
-        "ffmpeg -y -f rawvideo -pixel_format rgb24"
+        "ffmpeg -y -use_wallclock_as_timestamps 1"
+        " -f rawvideo -pixel_format rgb24"
         " -video_size " + std::to_string(w) + "x" + std::to_string(h) +
-        " -framerate 60 -i pipe:0"
-        " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
+        " -i pipe:0"
+        " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r 60"
         " " + record_path_ + " 2>/dev/null";
       ffmpeg_pipe_ = popen(cmd.c_str(), "w");
       if (!ffmpeg_pipe_) {
@@ -283,7 +293,8 @@ private:
         return;
       }
       record_buf_.resize(static_cast<size_t>(w) * h * 3);
-      RCLCPP_INFO(this->get_logger(), "Recording started: %s (%dx%d)", record_path_.c_str(), w, h);
+      RCLCPP_INFO(this->get_logger(), "Recording started: %s (%dx%d @ 60fps)",
+        record_path_.c_str(), w, h);
     }
 
     size_t frame_bytes = static_cast<size_t>(w) * h * 3;
@@ -396,6 +407,7 @@ private:
   std::string record_path_;
   FILE * ffmpeg_pipe_{nullptr};
   std::vector<uint8_t> record_buf_;
+  std::chrono::steady_clock::time_point last_record_time_{};
 
   int img_width_, img_height_;
   GLFWwindow* win_;

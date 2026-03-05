@@ -8,7 +8,7 @@ WS_ROOT="${PIXI_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 WIDTH=1920
 HEIGHT=1080
 BACKEND="cuda"
-PUBLISH_RATE=1
+PUBLISH_RATE=4
 RECORD_PATH=""
 
 # Parse command-line arguments
@@ -76,8 +76,11 @@ RENDERER="$WS_ROOT/build/tunnel_demo/tunnel_renderer_node"
 DISPLAY_NODE="$WS_ROOT/build/tunnel_demo/tunnel_display_node"
 
 cleanup() {
-    kill $ZENOH_PID $RENDERER_PID $DISPLAY_PID 2>/dev/null
-    wait 2>/dev/null
+    # Send SIGINT so rclcpp shuts down gracefully (destructors run, ffmpeg finalizes)
+    kill -INT $DISPLAY_PID $RENDERER_PID 2>/dev/null
+    wait $DISPLAY_PID $RENDERER_PID 2>/dev/null
+    kill $ZENOH_PID 2>/dev/null
+    wait $ZENOH_PID 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 

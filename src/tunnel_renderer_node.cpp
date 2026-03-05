@@ -1,4 +1,4 @@
-// Copyright 2026 NVIDIA Corporation
+// Copyright 2024 NVIDIA Corporation
 // Licensed under the Apache License, Version 2.0
 
 // Tunnel renderer node -- publishes animated tunnel frames as sensor_msgs/Image.
