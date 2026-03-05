@@ -15,6 +15,7 @@
 // image dimensions change.
 
 #include <torch/torch.h>
+#include <c10/cuda/CUDAStream.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <chrono>
@@ -237,16 +238,19 @@ private:
   }
 
   // Copy tensor data into the PBO via CUDA, then blit to the GL texture.
+  // All CUDA operations use the current stream set by the StreamGuard
+  // so they properly synchronize with the buffer read handle.
   void display_frame(const at::Tensor & tensor, int w, int h)
   {
     const size_t frame_bytes = static_cast<size_t>(w) * h * 3;
-    cudaGraphicsMapResources(1, &cuda_pbo_, 0);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    cudaGraphicsMapResources(1, &cuda_pbo_, stream);
     void* d_pbo = nullptr;
     size_t sz = 0;
     cudaGraphicsResourceGetMappedPointer(&d_pbo, &sz, cuda_pbo_);
     auto kind = tensor.is_cuda() ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
-    cudaMemcpy(d_pbo, tensor.data_ptr(), frame_bytes, kind);
-    cudaGraphicsUnmapResources(1, &cuda_pbo_, 0);
+    cudaMemcpyAsync(d_pbo, tensor.data_ptr(), frame_bytes, kind, stream);
+    cudaGraphicsUnmapResources(1, &cuda_pbo_, stream);
 
     glClear(GL_COLOR_BUFFER_BIT);
     pglBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
@@ -299,7 +303,10 @@ private:
 
     size_t frame_bytes = static_cast<size_t>(w) * h * 3;
     if (tensor.is_cuda()) {
-      cudaMemcpy(record_buf_.data(), tensor.data_ptr(), frame_bytes, cudaMemcpyDeviceToHost);
+      cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+      cudaMemcpyAsync(record_buf_.data(), tensor.data_ptr(), frame_bytes,
+        cudaMemcpyDeviceToHost, stream);
+      cudaStreamSynchronize(stream);
     } else {
       std::memcpy(record_buf_.data(), tensor.data_ptr(), frame_bytes);
     }
@@ -329,6 +336,7 @@ private:
       RCLCPP_INFO(this->get_logger(), "Resized to %dx%d", w, h);
     }
 
+    auto guard = torch_buffer_backend::set_stream();
     auto t0 = std::chrono::steady_clock::now();
     const rcl_buffer::Buffer<uint8_t> & data = msg->data;
     at::Tensor tensor = torch_buffer_backend::from_buffer(data);
