@@ -9,6 +9,7 @@ WIDTH=1920
 HEIGHT=1080
 BACKEND="cuda"
 PUBLISH_RATE=1
+RECORD_PATH=""
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -29,13 +30,18 @@ while [[ $# -gt 0 ]]; do
             PUBLISH_RATE="$2"
             shift 2
             ;;
+        --record)
+            RECORD_PATH="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
-            echo "  --width WIDTH         Image width (default: 3840)"
-            echo "  --height HEIGHT       Image height (default: 2160)"
+            echo "  --width WIDTH         Image width (default: 1920)"
+            echo "  --height HEIGHT       Image height (default: 1080)"
             echo "  --backend BACKEND     cuda or cpu (default: cuda)"
             echo "  --rate RATE_MS        Publish rate in ms (default: 1)"
+            echo "  --record PATH         Record video to MP4 file (requires ffmpeg)"
             echo "  --help                Show this help message"
             exit 0
             ;;
@@ -91,8 +97,14 @@ $RENDERER --ros-args \
     -p publish_rate_ms:=$PUBLISH_RATE &
 RENDERER_PID=$!
 
-echo "Starting tunnel display (subscriber)..."
-$DISPLAY_NODE &
+DISPLAY_ARGS=""
+if [[ -n "$RECORD_PATH" ]]; then
+    DISPLAY_ARGS="--ros-args -p record_path:=$RECORD_PATH"
+    echo "Starting tunnel display (subscriber, recording to $RECORD_PATH)..."
+else
+    echo "Starting tunnel display (subscriber)..."
+fi
+$DISPLAY_NODE $DISPLAY_ARGS &
 DISPLAY_PID=$!
 
 echo "All nodes running. Press Ctrl+C to stop."

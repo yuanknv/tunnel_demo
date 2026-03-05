@@ -18,6 +18,10 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
@@ -118,7 +122,9 @@ public:
     cuda_pbo_(nullptr), gl_ready_(false), headless_(false)
   {
     this->declare_parameter<bool>("headless", false);
+    this->declare_parameter<std::string>("record_path", "");
     headless_ = this->get_parameter("headless").as_bool();
+    record_path_ = this->get_parameter("record_path").as_string();
 
     if (!headless_) {
       cudaSetDevice(0);
@@ -144,12 +150,17 @@ public:
         std::bind(&TunnelDisplay::pump_glfw, this));
     }
 
-    RCLCPP_INFO(this->get_logger(), "Tunnel display started (%dx%d, %s)",
-      img_width_, img_height_, headless_ ? "headless" : "OpenGL + CUDA interop");
+    RCLCPP_INFO(this->get_logger(), "Tunnel display started (%dx%d, %s%s)",
+      img_width_, img_height_, headless_ ? "headless" : "OpenGL + CUDA interop",
+      record_path_.empty() ? "" : (", recording to " + record_path_).c_str());
   }
 
   ~TunnelDisplay() override
   {
+    if (ffmpeg_pipe_) {
+      pclose(ffmpeg_pipe_);
+      RCLCPP_INFO(this->get_logger(), "Video saved to %s", record_path_.c_str());
+    }
     if (cuda_pbo_) cudaGraphicsUnregisterResource(cuda_pbo_);
     if (gl_ready_) {
       pglDeleteBuffers(1, &pbo_);
@@ -253,6 +264,37 @@ private:
     glfwSwapBuffers(win_);
   }
 
+  // Pipe raw RGB frames to ffmpeg for MP4 recording.
+  // The ffmpeg subprocess is spawned lazily on the first frame so the
+  // actual resolution is known.
+  void record_frame(const at::Tensor & tensor, int w, int h)
+  {
+    if (!ffmpeg_pipe_) {
+      std::string cmd =
+        "ffmpeg -y -f rawvideo -pixel_format rgb24"
+        " -video_size " + std::to_string(w) + "x" + std::to_string(h) +
+        " -framerate 60 -i pipe:0"
+        " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
+        " " + record_path_ + " 2>/dev/null";
+      ffmpeg_pipe_ = popen(cmd.c_str(), "w");
+      if (!ffmpeg_pipe_) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to open ffmpeg pipe");
+        record_path_.clear();
+        return;
+      }
+      record_buf_.resize(static_cast<size_t>(w) * h * 3);
+      RCLCPP_INFO(this->get_logger(), "Recording started: %s (%dx%d)", record_path_.c_str(), w, h);
+    }
+
+    size_t frame_bytes = static_cast<size_t>(w) * h * 3;
+    if (tensor.is_cuda()) {
+      cudaMemcpy(record_buf_.data(), tensor.data_ptr(), frame_bytes, cudaMemcpyDeviceToHost);
+    } else {
+      std::memcpy(record_buf_.data(), tensor.data_ptr(), frame_bytes);
+    }
+    fwrite(record_buf_.data(), 1, frame_bytes, ffmpeg_pipe_);
+  }
+
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
   {
     auto cb_start = std::chrono::steady_clock::now();
@@ -283,6 +325,10 @@ private:
 
     if (gl_ready_) {
       display_frame(tensor, w, h);
+    }
+
+    if (!record_path_.empty()) {
+      record_frame(tensor, w, h);
     }
     auto t2 = std::chrono::steady_clock::now();
 
@@ -346,6 +392,10 @@ private:
   std::chrono::steady_clock::time_point last_cb_end_{};
   double from_buf_sum_us_{0}, display_sum_us_{0}, publish_sum_us_{0};
   double total_cb_sum_us_{0}, gap_sum_us_{0};
+
+  std::string record_path_;
+  FILE * ffmpeg_pipe_{nullptr};
+  std::vector<uint8_t> record_buf_;
 
   int img_width_, img_height_;
   GLFWwindow* win_;
