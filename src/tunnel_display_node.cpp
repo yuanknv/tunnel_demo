@@ -48,6 +48,8 @@
 
 static constexpr int DEFAULT_WIDTH  = 1280;
 static constexpr int DEFAULT_HEIGHT = 720;
+static constexpr int MAX_WIN_WIDTH  = 1920;
+static constexpr int MAX_WIN_HEIGHT = 1080;
 
 // OpenGL 3.3 core-profile function pointers loaded at runtime via glX
 #define DECL_GL(ret, name, ...) static ret (APIENTRY *name)(__VA_ARGS__) = nullptr;
@@ -88,7 +90,7 @@ static void loadGLFunctions()
 // Minimal fullscreen-quad shaders for texture display
 static const char* vs_src = "#version 330 core\n"
   "layout(location=0) in vec2 pos; out vec2 uv;"
-  "void main() { gl_Position = vec4(pos, 0, 1); uv = pos*0.5+0.5; }";
+  "void main() { gl_Position = vec4(pos, 0, 1); uv = vec2(pos.x*0.5+0.5, 0.5-pos.y*0.5); }";
 static const char* fs_src = "#version 330 core\n"
   "uniform sampler2D tex; in vec2 uv; out vec4 fragColor;"
   "void main() { fragColor = texture(tex, uv); }";
@@ -175,13 +177,23 @@ public:
   }
 
 private:
+  static void fit_window_size(int & w, int & h)
+  {
+    if (w <= MAX_WIN_WIDTH && h <= MAX_WIN_HEIGHT) return;
+    float scale = fminf((float)MAX_WIN_WIDTH / w, (float)MAX_WIN_HEIGHT / h);
+    w = (int)(w * scale);
+    h = (int)(h * scale);
+  }
+
   bool init_gl()
   {
     if (!glfwInit()) return false;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    win_ = glfwCreateWindow(img_width_, img_height_, "Tunnel Display", nullptr, nullptr);
+    int win_w = img_width_, win_h = img_height_;
+    fit_window_size(win_w, win_h);
+    win_ = glfwCreateWindow(win_w, win_h, "Tunnel Display", nullptr, nullptr);
     if (!win_) { glfwTerminate(); return false; }
     glfwMakeContextCurrent(win_);
     glfwSwapInterval(0);
@@ -327,14 +339,15 @@ private:
     int w = static_cast<int>(msg->width);
     int h = static_cast<int>(msg->height);
 
-    // Resize GL resources if the publisher changed resolution
     if (gl_ready_ && (w != img_width_ || h != img_height_)) {
       img_width_ = w;
       img_height_ = h;
-      glfwSetWindowSize(win_, w, h);
-      glViewport(0, 0, w, h);
+      int win_w = w, win_h = h;
+      fit_window_size(win_w, win_h);
+      glfwSetWindowSize(win_, win_w, win_h);
+      glViewport(0, 0, win_w, win_h);
       setup_gl_resources(w, h);
-      RCLCPP_INFO(this->get_logger(), "Resized to %dx%d", w, h);
+      RCLCPP_INFO(this->get_logger(), "Image %dx%d, window %dx%d", w, h, win_w, win_h);
     }
 
     auto guard = torch_buffer_backend::set_stream();
@@ -389,8 +402,11 @@ private:
         gap_sum_us_ / n,
         gl_ready_ ? "GPU direct" : "headless");
       if (win_) {
-        char title[80];
-        snprintf(title, sizeof(title), "Tunnel Display -- %.1f fps", fps);
+        char title[128];
+        double mb = img_width_ * img_height_ * 3 / 1e6;
+        snprintf(title, sizeof(title),
+          "Tunnel Display -- %.1f fps | %dx%d (%.1f MB)",
+          fps, img_width_, img_height_, mb);
         glfwSetWindowTitle(win_, title);
       }
       frame_count_ = 0;

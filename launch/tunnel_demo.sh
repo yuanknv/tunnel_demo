@@ -10,6 +10,7 @@ HEIGHT=1440
 BACKEND="cuda"
 PUBLISH_RATE=4
 RECORD_PATH=""
+SCENE="moving_objects"
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
             RECORD_PATH="$2"
             shift 2
             ;;
+        --scene)
+            SCENE="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
@@ -42,6 +47,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --backend BACKEND     cuda or cpu (default: cuda)"
             echo "  --rate RATE_MS        Publish rate in ms (default: 1)"
             echo "  --record PATH         Record video to MP4 file (requires ffmpeg)"
+            echo "  --scene SCENE         Render scene: moving_objects or tunnel (default: moving_objects)"
             echo "  --help                Show this help message"
             exit 0
             ;;
@@ -92,12 +98,14 @@ sleep 1
 echo "Starting tunnel renderer (publisher)..."
 echo "  Resolution: ${WIDTH}x${HEIGHT}"
 echo "  Backend: $BACKEND"
+echo "  Scene: $SCENE"
 echo "  Rate: ${PUBLISH_RATE}ms"
 $RENDERER --ros-args \
     -p image_width:=$WIDTH \
     -p image_height:=$HEIGHT \
     -p use_cuda:=$USE_CUDA \
-    -p publish_rate_ms:=$PUBLISH_RATE &
+    -p publish_rate_ms:=$PUBLISH_RATE \
+    -p scene:=$SCENE &
 RENDERER_PID=$!
 
 DISPLAY_ARGS=""
