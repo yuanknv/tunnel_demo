@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="${PIXI_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 
 # Default parameters
-WIDTH=1920
-HEIGHT=1080
+WIDTH=2560
+HEIGHT=1440
 BACKEND="cuda"
 PUBLISH_RATE=4
 RECORD_PATH=""

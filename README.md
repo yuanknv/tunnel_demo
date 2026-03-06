@@ -30,8 +30,8 @@ pixi run bash src/tunnel_demo/launch/tunnel_demo.sh
 Options:
 
 ```
---width WIDTH       Image width (default: 1920)
---height HEIGHT     Image height (default: 1080)
+--width WIDTH       Image width (default: 2560)
+--height HEIGHT     Image height (default: 1440)
 --backend BACKEND   cuda or cpu (default: cuda)
 --rate RATE_MS      Publish timer period in ms (default: 1)
 ```
