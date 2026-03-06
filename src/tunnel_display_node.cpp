@@ -251,6 +251,7 @@ private:
     auto kind = tensor.is_cuda() ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
     cudaMemcpyAsync(d_pbo, tensor.data_ptr(), frame_bytes, kind, stream);
     cudaGraphicsUnmapResources(1, &cuda_pbo_, stream);
+    cudaStreamSynchronize(stream);
 
     glClear(GL_COLOR_BUFFER_BIT);
     pglBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
