@@ -11,11 +11,11 @@
 #include <cuda_runtime.h>
 #include <cmath>
 
-#define MAX_STEPS    150
+#define MAX_STEPS    100
 #define MAX_DIST     40.0f
 #define SURF_DIST    0.001f
-#define SHADOW_STEPS 64
-#define AO_STEPS     8
+#define SHADOW_STEPS 40
+#define AO_STEPS     5
 
 #define ORBIT_RADIUS 6.0f
 #define ORBIT_SPEED  0.5f
@@ -138,9 +138,9 @@ __device__ float ambientOcclusion(float3_t p, float3_t n, float time)
   return clampf(1.0f - 1.5f * occ, 0.0f, 1.0f);
 }
 
-// ===== Main kernel =====
+// ===== SDF scene kernel =====
 
-__global__ void tunnel_kernel(
+__global__ void moving_objects_kernel(
   unsigned char* __restrict__ rgb,
   int width, int height, float time)
 {
@@ -230,12 +230,304 @@ __global__ void tunnel_kernel(
   rgb[base + 2] = (unsigned char)(col.z * 255.0f);
 }
 
-extern "C" void launch_tunnel_effect(
+extern "C" void launch_moving_objects(
   unsigned char* d_rgb,
   int width, int height, float time,
   cudaStream_t stream)
 {
   dim3 block(16, 16);
   dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-  tunnel_kernel<<<grid, block, 0, stream>>>(d_rgb, width, height, time);
+  moving_objects_kernel<<<grid, block, 0, stream>>>(d_rgb, width, height, time);
+}
+
+// ===== Tunnel rings kernel =====
+
+#define T_RADIUS      0.4f
+#define T_GLOW_W      0.006f
+#define T_CAM_SPEED   2.0f
+#define T_PAL_SPEED   0.3f
+#define T_RING_COUNT  16
+#define T_WALL_STEPS  24
+#define T_FOG_DENSITY 0.04f
+
+__device__ void t_palette(float t, float &r, float &g, float &b)
+{
+  const float pi = 3.14159265f;
+  r = 0.5f + 0.5f * __cosf(2.0f * pi * (t + 0.0f));
+  g = 0.5f + 0.5f * __cosf(2.0f * pi * (t + 0.33f));
+  b = 0.5f + 0.5f * __cosf(2.0f * pi * (t + 0.66f));
+}
+
+__device__ float t_hash(float n)
+{
+  return fmodf(sinf(n) * 43758.5453f, 1.0f);
+  // fmod result can be negative; clamp to [0,1]
+}
+
+__device__ float t_noise(float z)
+{
+  float i = floorf(z);
+  float f = z - i;
+  f = f * f * (3.0f - 2.0f * f);
+  return fabsf(t_hash(i)) * (1.0f - f) + fabsf(t_hash(i + 1.0f)) * f;
+}
+
+__global__ void tunnel_rings_kernel(
+  unsigned char* __restrict__ rgb,
+  int width, int height, float time)
+{
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= width || y >= height) return;
+
+  float aspect = (float)width / (float)height;
+  float u = (2.0f * (x + 0.5f) / width - 1.0f) * aspect;
+  float v = 2.0f * (y + 0.5f) / height - 1.0f;
+  float r_pixel = sqrtf(u * u + v * v);
+  if (r_pixel > 1.0f) {
+    int base = (y * width + x) * 3;
+    rgb[base + 0] = 0;
+    rgb[base + 1] = 0;
+    rgb[base + 2] = 0;
+    return;
+  }
+
+  float z_cam = time * T_CAM_SPEED;
+
+  float acc_r = 0.0f, acc_g = 0.0f, acc_b = 0.0f;
+
+  if (r_pixel < 0.0001f) r_pixel = 0.0001f;
+  float depth = T_RADIUS / r_pixel;
+  float z_world = depth + z_cam;
+  int ring_z_base = (int)floorf(z_world) - T_RING_COUNT / 2;
+
+  for (int i = 0; i < T_RING_COUNT; i++) {
+    float rz = (float)(ring_z_base + i);
+    float ring_depth = rz - z_cam;
+    if (ring_depth <= 0.05f) continue;
+
+    float r_ring = T_RADIUS / ring_depth;
+    float dist = fabsf(r_pixel - r_ring);
+
+    float glow_w = T_GLOW_W * (1.0f + 0.15f * sinf(rz * 2.7f + time * 1.5f));
+    float glow = expf(-dist * dist / (2.0f * glow_w * glow_w));
+
+    float ring_t = rz * 0.08f + time * T_PAL_SPEED;
+    float cr, cg, cb;
+    t_palette(ring_t, cr, cg, cb);
+
+    float fade = 1.0f / (1.0f + ring_depth * ring_depth * 0.02f);
+    float pulse = 0.7f + 0.3f * sinf(rz * 1.3f + time * 3.0f);
+
+    acc_r += cr * glow * fade * pulse;
+    acc_g += cg * glow * fade * pulse;
+    acc_b += cb * glow * fade * pulse;
+  }
+
+  // Wall illumination: march along the tunnel depth, accumulate scattered ring light
+  float angle = atan2f(v, u);
+  for (int s = 0; s < T_WALL_STEPS; s++) {
+    float sd = 0.3f + (float)s * 0.4f;
+    float sz = sd + z_cam;
+    float wall_r = T_RADIUS / sd;
+
+    float wall_tex = 0.03f + 0.02f * t_noise(sz * 4.0f + angle * 3.0f);
+
+    int nearest_ring = (int)floorf(sz + 0.5f);
+    float ring_dist = fabsf(sz - (float)nearest_ring);
+    float ring_light = expf(-ring_dist * ring_dist * 8.0f);
+
+    float rt = (float)nearest_ring * 0.08f + time * T_PAL_SPEED;
+    float wr, wg, wb;
+    t_palette(rt, wr, wg, wb);
+
+    float prox = expf(-fabsf(r_pixel - wall_r) * 120.0f);
+    float depth_fade = expf(-sd * T_FOG_DENSITY * 3.0f);
+
+    float contrib = wall_tex * ring_light * prox * depth_fade;
+    acc_r += wr * contrib;
+    acc_g += wg * contrib;
+    acc_b += wb * contrib;
+  }
+
+  // Depth fog
+  float fog = expf(-depth * T_FOG_DENSITY);
+  acc_r *= fog;
+  acc_g *= fog;
+  acc_b *= fog;
+
+  // Vignette (soft, only near the outer edge)
+  float vig = 1.0f - fmaxf(0.0f, r_pixel - 0.6f) * 1.5f;
+  vig = fmaxf(0.0f, vig);
+  acc_r *= vig;
+  acc_g *= vig;
+  acc_b *= vig;
+
+  // Gamma (no tone mapping -- keep the punchy contrast)
+  acc_r = powf(fminf(acc_r, 1.0f), 0.45f);
+  acc_g = powf(fminf(acc_g, 1.0f), 0.45f);
+  acc_b = powf(fminf(acc_b, 1.0f), 0.45f);
+
+  int base = (y * width + x) * 3;
+  rgb[base + 0] = (unsigned char)(fminf(255.0f, acc_r * 255.0f));
+  rgb[base + 1] = (unsigned char)(fminf(255.0f, acc_g * 255.0f));
+  rgb[base + 2] = (unsigned char)(fminf(255.0f, acc_b * 255.0f));
+}
+
+extern "C" void launch_tunnel_rings(
+  unsigned char* d_rgb,
+  int width, int height, float time,
+  cudaStream_t stream)
+{
+  dim3 block(16, 16);
+  dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+  tunnel_rings_kernel<<<grid, block, 0, stream>>>(d_rgb, width, height, time);
+}
+
+// ===== Frame number overlay =====
+
+// 5x7 bitmap font for digits 0-9.  Each row is 5 bits wide (bit 4 = left).
+__constant__ unsigned char FONT_5x7[10][7] = {
+  {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, // 0
+  {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 1
+  {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, // 2
+  {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E}, // 3
+  {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 4
+  {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, // 5
+  {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, // 6
+  {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 7
+  {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, // 8
+  {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, // 9
+};
+
+__device__ float rounded_rect_alpha(int px, int py, int rx, int ry, int rw, int rh, int radius)
+{
+  int dx = 0, dy = 0;
+  if (px < rx + radius && py < ry + radius) {
+    dx = rx + radius - px; dy = ry + radius - py;
+  } else if (px >= rx + rw - radius && py < ry + radius) {
+    dx = px - (rx + rw - radius - 1); dy = ry + radius - py;
+  } else if (px < rx + radius && py >= ry + rh - radius) {
+    dx = rx + radius - px; dy = py - (ry + rh - radius - 1);
+  } else if (px >= rx + rw - radius && py >= ry + rh - radius) {
+    dx = px - (rx + rw - radius - 1); dy = py - (ry + rh - radius - 1);
+  }
+  if (dx > 0 && dy > 0) {
+    float dist = sqrtf((float)(dx * dx + dy * dy));
+    if (dist > (float)radius) return 0.0f;
+    if (dist > (float)radius - 1.5f) return 1.0f - (dist - ((float)radius - 1.5f)) / 1.5f;
+  }
+  if (px < rx || px >= rx + rw || py < ry || py >= ry + rh) return 0.0f;
+  return 1.0f;
+}
+
+__global__ void render_number_kernel(
+  unsigned char* __restrict__ rgb, int img_w, int img_h,
+  unsigned int number, int num_digits, int scale,
+  int box_x, int box_y, int box_w, int box_h,
+  int text_x, int text_y, int corner_r)
+{
+  int bx = blockIdx.x * blockDim.x + threadIdx.x;
+  int by = blockIdx.y * blockDim.y + threadIdx.y;
+  if (bx >= box_w || by >= box_h) return;
+
+  int px = box_x + bx;
+  int py = box_y + by;
+  if (px < 0 || px >= img_w || py < 0 || py >= img_h) return;
+
+  float box_alpha = rounded_rect_alpha(px, py, box_x, box_y, box_w, box_h, corner_r);
+  if (box_alpha <= 0.0f) return;
+
+  int glyph_pitch = 6 * scale;
+  int text_w = num_digits * glyph_pitch;
+  int text_h = 7 * scale;
+
+  int tx = px - text_x;
+  int ty_local = py - text_y;
+
+  bool lit = false;
+  bool in_shadow = false;
+  if (tx >= 0 && tx < text_w && ty_local >= 0 && ty_local < text_h) {
+    int digit_idx = tx / glyph_pitch;
+    int local_x = (tx % glyph_pitch) / scale;
+    int local_y = ty_local / scale;
+
+    unsigned int tmp = number;
+    for (int i = num_digits - 1 - digit_idx; i > 0; i--) tmp /= 10;
+    int d = tmp % 10;
+
+    if (local_x < 5 && local_y < 7)
+      lit = (FONT_5x7[d][local_y] >> (4 - local_x)) & 1;
+  }
+
+  // Shadow: check 1 scaled pixel down-right
+  int sx = px - text_x - scale;
+  int sy = py - text_y - scale;
+  if (!lit && sx >= 0 && sx < text_w && sy >= 0 && sy < text_h) {
+    int digit_idx = sx / glyph_pitch;
+    int local_x = (sx % glyph_pitch) / scale;
+    int local_y = sy / scale;
+
+    unsigned int tmp = number;
+    for (int i = num_digits - 1 - digit_idx; i > 0; i--) tmp /= 10;
+    int d = tmp % 10;
+
+    if (local_x < 5 && local_y < 7)
+      in_shadow = (FONT_5x7[d][local_y] >> (4 - local_x)) & 1;
+  }
+
+  int idx = (py * img_w + px) * 3;
+  unsigned char r = rgb[idx + 0];
+  unsigned char g = rgb[idx + 1];
+  unsigned char b = rgb[idx + 2];
+
+  float br = r / 255.0f, bg = g / 255.0f, bb = b / 255.0f;
+
+  // Background: dark translucent pill
+  float bg_r = br * 0.18f, bg_g = bg * 0.18f, bg_b = bb * 0.18f;
+  br = br * (1.0f - box_alpha * 0.82f) + bg_r * box_alpha;
+  bg = bg * (1.0f - box_alpha * 0.82f) + bg_g * box_alpha;
+  bb = bb * (1.0f - box_alpha * 0.82f) + bg_b * box_alpha;
+
+  if (in_shadow) {
+    br *= 0.4f; bg *= 0.4f; bb *= 0.4f;
+  }
+
+  if (lit) {
+    br = 1.0f; bg = 1.0f; bb = 1.0f;
+  }
+
+  rgb[idx + 0] = (unsigned char)(fminf(br * 255.0f, 255.0f));
+  rgb[idx + 1] = (unsigned char)(fminf(bg * 255.0f, 255.0f));
+  rgb[idx + 2] = (unsigned char)(fminf(bb * 255.0f, 255.0f));
+}
+
+extern "C" void launch_render_frame_number(
+  unsigned char* d_rgb, int width, int height,
+  unsigned int frame_number, cudaStream_t stream)
+{
+  int num_digits = 1;
+  unsigned int tmp = frame_number;
+  while (tmp >= 10) { tmp /= 10; num_digits++; }
+
+  const int scale = max(2, height / 216);
+  int glyph_pitch = 6 * scale;
+  int text_w = num_digits * glyph_pitch;
+  int text_h = 7 * scale;
+  int margin_x = scale * 3;
+  int margin_y = scale * 2;
+  int corner_r = scale * 2;
+
+  int box_w = text_w + 2 * margin_x;
+  int box_h = text_h + 2 * margin_y;
+  int box_x = (width - box_w) / 2;
+  int box_y = scale * 15;
+  int text_x = box_x + margin_x;
+  int text_y = box_y + margin_y;
+
+  dim3 block(16, 16);
+  dim3 grid((box_w + block.x - 1) / block.x, (box_h + block.y - 1) / block.y);
+  render_number_kernel<<<grid, block, 0, stream>>>(
+    d_rgb, width, height, frame_number, num_digits, scale,
+    box_x, box_y, box_w, box_h, text_x, text_y, corner_r);
 }

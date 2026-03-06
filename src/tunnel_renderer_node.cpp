@@ -13,6 +13,7 @@
 #include <c10/cuda/CUDAStream.h>
 #include <cuda_runtime.h>
 #include <chrono>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
@@ -32,13 +33,15 @@ public:
   {
     this->declare_parameter<int>("publish_rate_ms", 1);
     this->declare_parameter<bool>("use_cuda", true);
-    this->declare_parameter<int>("image_width", 1920);
-    this->declare_parameter<int>("image_height", 1080);
+    this->declare_parameter<int>("image_width", 3840);
+    this->declare_parameter<int>("image_height", 2160);
+    this->declare_parameter<std::string>("scene", "moving_objects");
     int rate_ms = this->get_parameter("publish_rate_ms").as_int();
     if (rate_ms <= 0) rate_ms = 1;
     use_cuda_ = this->get_parameter("use_cuda").as_bool();
     width_ = this->get_parameter("image_width").as_int();
     height_ = this->get_parameter("image_height").as_int();
+    scene_ = this->get_parameter("scene").as_string();
 
     auto qos = rclcpp::QoS(1).best_effort();
     publisher_ = this->create_publisher<sensor_msgs::msg::Image>("tunnel_image", qos);
@@ -47,9 +50,9 @@ public:
       std::bind(&TunnelRenderer::timer_callback, this));
 
     RCLCPP_INFO(this->get_logger(),
-      "Tunnel renderer started (%dx%d, %.1f MB, timer=%dms, transport=%s)",
+      "Tunnel renderer started (%dx%d, %.1f MB, timer=%dms, transport=%s, scene=%s)",
       width_, height_, width_ * height_ * 3 / 1e6,
-      rate_ms, use_cuda_ ? "cuda" : "cpu");
+      rate_ms, use_cuda_ ? "cuda" : "cpu", scene_.c_str());
   }
 
 private:
@@ -86,16 +89,26 @@ private:
 
     auto t_kernel = std::chrono::steady_clock::now();
     if (use_cuda_) {
-      // CUDA path: render directly into the buffer-backed tensor (zero-copy)
       at::Tensor output = torch_buffer_backend::from_buffer(msg.data);
       cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-      launch_tunnel_effect(output.data_ptr<unsigned char>(), width_, height_, t, stream);
+      auto* ptr = output.data_ptr<unsigned char>();
+      if (scene_ == "tunnel") {
+        launch_tunnel_rings(ptr, width_, height_, t, stream);
+      } else {
+        launch_moving_objects(ptr, width_, height_, t, stream);
+      }
+      launch_render_frame_number(ptr, width_, height_, frame_seq_++, stream);
     } else {
-      // CPU path: render on GPU, then copy to host buffer
+      cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
       at::Tensor gpu_frame = torch::empty({height_, width_, 3},
         torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA));
-      cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-      launch_tunnel_effect(gpu_frame.data_ptr<unsigned char>(), width_, height_, t, stream);
+      auto* ptr = gpu_frame.data_ptr<unsigned char>();
+      if (scene_ == "tunnel") {
+        launch_tunnel_rings(ptr, width_, height_, t, stream);
+      } else {
+        launch_moving_objects(ptr, width_, height_, t, stream);
+      }
+      launch_render_frame_number(ptr, width_, height_, frame_seq_++, stream);
       at::Tensor cpu_frame = gpu_frame.cpu();
       torch_buffer_backend::to_buffer(cpu_frame, msg.data);
     }
@@ -140,6 +153,8 @@ private:
   std::chrono::steady_clock::time_point fps_timer_;
   bool use_cuda_;
   int width_, height_;
+  std::string scene_;
+  unsigned int frame_seq_{0};
   std::chrono::steady_clock::time_point last_cb_end_{};
   double alloc_sum_us_{0}, kernel_sum_us_{0}, pub_sum_us_{0};
   double total_sum_us_{0}, gap_sum_us_{0};
