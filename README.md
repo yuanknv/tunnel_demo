@@ -59,16 +59,16 @@ To reproduce, build the workspace and run:
 pixi run bash src/tunnel_demo/launch/bench_all.sh
 ```
 
-| Resolution | Image Size | Transport | FPS | Speedup |
-|---|---|---|---:|---:|
-| 1280x720 | 2.8 MB | CUDA | 103.3 | 31x |
-| 1280x720 | 2.8 MB | CPU | 3.3 | -- |
-| 1920x1080 | 6.2 MB | CUDA | 101.1 | 53x |
-| 1920x1080 | 6.2 MB | CPU | 1.9 | -- |
-| 2560x1440 | 11.1 MB | CUDA | 73.0 | 73x |
-| 2560x1440 | 11.1 MB | CPU | 1.0 | -- |
+| Resolution | Image Size | Transport | FPS | E2E Latency | Speedup |
+|---|---|---|---:|---:|---:|
+| 1280x720 | 2.8 MB | CUDA | 103.1 | 18.2 ms | 20x |
+| 1280x720 | 2.8 MB | CPU | 5.1 | 220.1 ms | -- |
+| 1920x1080 | 6.2 MB | CUDA | 102.2 | 18.9 ms | 51x |
+| 1920x1080 | 6.2 MB | CPU | 2.0 | 565.2 ms | -- |
+| 2560x1440 | 11.1 MB | CUDA | 76.4 | 15.6 ms | 76x |
+| 2560x1440 | 11.1 MB | CPU | 1.0 | 1124.2 ms | -- |
 
-The CUDA-vs-CPU speedup grows with resolution because the zero-copy transport cost is constant while CPU memcpy scales linearly with image size. At 2K the CUDA backend is 73x faster than CPU. The absolute CUDA FPS is bounded by the GPU render time (LibTorch tensor ops), which scales with pixel count.
+The CUDA-vs-CPU speedup grows with resolution because the zero-copy transport cost is constant while CPU memcpy scales linearly with image size. At 2K the CUDA backend is 76x faster than CPU. The absolute CUDA FPS is bounded by the GPU render time (LibTorch tensor ops), which scales with pixel count.
 
 ## License
 
