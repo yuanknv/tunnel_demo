@@ -17,7 +17,7 @@ import launch_testing.asserts
 import launch_testing.markers
 import pytest
 import rclpy
-from std_msgs.msg import Float64, UInt32
+from sensor_msgs.msg import Image
 
 
 @pytest.mark.launch_test
@@ -95,45 +95,32 @@ class TestTunnelDemo(unittest.TestCase):
 
     def setUp(self):
         self.node = rclpy.create_node('test_tunnel_demo')
-        self.subscriber_count = 0
-        self.latencies = []
-        self.count_timestamps = []
+        self.frame_count = 0
+        self.frame_timestamps = []
         self.node.create_subscription(
-            UInt32, 'subscriber_count', self._count_cb, 10)
-        self.node.create_subscription(
-            Float64, 'latency_ms', self._latency_cb, 10)
+            Image, 'tunnel_image', self._image_cb,
+            rclpy.qos.QoSProfile(depth=1, reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT))
 
     def tearDown(self):
         self.node.destroy_node()
 
-    def _count_cb(self, msg):
-        self.subscriber_count = msg.data
-        self.count_timestamps.append(time.time())
-
-    def _latency_cb(self, msg):
-        self.latencies.append(msg.data)
+    def _image_cb(self, msg):
+        self.frame_count += 1
+        self.frame_timestamps.append(time.time())
 
     def test_tunnel_pubsub(self):
         start = time.time()
         while time.time() - start < 12.0:
             rclpy.spin_once(self.node, timeout_sec=0.1)
 
-        self.assertGreaterEqual(self.subscriber_count, 5)
+        self.assertGreaterEqual(self.frame_count, 5)
 
-        if len(self.count_timestamps) >= 2:
-            warmup = min(10, len(self.count_timestamps) // 5)
-            steady = self.count_timestamps[warmup:]
+        if len(self.frame_timestamps) >= 2:
+            warmup = min(10, len(self.frame_timestamps) // 5)
+            steady = self.frame_timestamps[warmup:]
             if len(steady) >= 2:
                 fps = (len(steady) - 1) / (steady[-1] - steady[0])
-                print(f'\n--- FPS: {fps:.1f}, frames: {self.subscriber_count} ---')
-
-        if self.latencies:
-            warmup = min(10, len(self.latencies) // 5)
-            steady = self.latencies[warmup:]
-            if steady:
-                print(f'  E2E latency: min={min(steady):.2f} '
-                      f'mean={sum(steady)/len(steady):.2f} '
-                      f'max={max(steady):.2f} ms')
+                print(f'\n--- FPS: {fps:.1f}, frames: {self.frame_count} ---')
 
 
 @launch_testing.post_shutdown_test()

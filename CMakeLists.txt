@@ -47,7 +47,6 @@ else()
 endif()
 find_package(Torch REQUIRED)
 
-find_package(std_msgs REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(launch_testing_ament_cmake REQUIRED)
 find_package(OpenGL REQUIRED)
@@ -96,7 +95,6 @@ target_link_libraries(tunnel_display_component
   rclcpp::rclcpp
   rclcpp_components::component
   ${sensor_msgs_TARGETS}
-  ${std_msgs_TARGETS}
   CUDA::cudart
   CUDA::cuda_driver
   OpenGL::GL

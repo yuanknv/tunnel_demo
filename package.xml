@@ -16,7 +16,6 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
-  <depend>std_msgs</depend>
   <depend>torch_buffer</depend>
   <depend>torch_buffer_backend</depend>
   <depend>cuda_buffer_backend</depend>

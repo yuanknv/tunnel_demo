@@ -70,14 +70,14 @@ pixi run bash src/tunnel_demo/launch/bench_all.sh
 
 | Resolution | Image Size | Transport | FPS | E2E Latency | Speedup |
 |---|---|---|---:|---:|---:|
-| 1920x1080 | 7.9 MB | CUDA | 101.9 | 19.3 ms | 1.4x |
-| 1920x1080 | 7.9 MB | CPU | 72.2 | 26.1 ms | -- |
-| 2560x1440 | 14.1 MB | CUDA | 101.0 | 24.3 ms | 3.8x |
-| 2560x1440 | 14.1 MB | CPU | 26.4 | 108.4 ms | -- |
-| 3840x2160 | 31.6 MB | CUDA | 103.5 | 40.9 ms | 9.2x |
-| 3840x2160 | 31.6 MB | CPU | 11.3 | 259.4 ms | -- |
+| 1920x1080 | 7.9 MB | CUDA | 103.1 | 38.6 ms | 1.3x |
+| 1920x1080 | 7.9 MB | CPU | 81.0 | 24.3 ms | -- |
+| 2560x1440 | 14.1 MB | CUDA | 103.6 | 22.0 ms | 3.6x |
+| 2560x1440 | 14.1 MB | CPU | 28.5 | 100.1 ms | -- |
+| 3840x2160 | 31.6 MB | CUDA | 100.0 | 40.0 ms | 7.9x |
+| 3840x2160 | 31.6 MB | CPU | 12.6 | 224.0 ms | -- |
 
-The CUDA path maintains ~100 FPS across all resolutions because zero-copy IPC cost is nearly constant regardless of frame size. The CPU path must copy frames from GPU to host and serialise them through the middleware, so its throughput drops as image size grows. At 4K (31.6 MB/frame) the CUDA backend is over 9x faster than the raw CPU path.
+The CUDA path maintains ~100 FPS across all resolutions because zero-copy IPC cost is nearly constant regardless of frame size. The CPU path must copy frames from GPU to host and serialise them through the middleware, so its throughput drops as image size grows. At 4K (31.6 MB/frame) the CUDA backend is ~8x faster than the raw CPU path.
 
 ## License
 

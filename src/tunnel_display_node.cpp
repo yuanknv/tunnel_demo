@@ -14,8 +14,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/image.hpp"
-#include "std_msgs/msg/u_int32.hpp"
-#include "std_msgs/msg/float64.hpp"
 #include "torch_buffer/torch_buffer.hpp"
 #include "display.h"
 #include <SDL.h>
@@ -26,7 +24,6 @@ public:
   explicit TunnelDisplay(const rclcpp::NodeOptions & options)
   : Node("tunnel_display", options),
     frame_count_(0),
-    total_count_(0),
     fps_timer_(std::chrono::steady_clock::now()),
     headless_(false)
   {
@@ -41,9 +38,6 @@ public:
     subscription_ = this->create_subscription<sensor_msgs::msg::Image>(
       "tunnel_image", qos,
       std::bind(&TunnelDisplay::image_callback, this, std::placeholders::_1));
-
-    count_publisher_ = this->create_publisher<std_msgs::msg::UInt32>("subscriber_count", 10);
-    latency_publisher_ = this->create_publisher<std_msgs::msg::Float64>("latency_ms", 10);
 
     if (!headless_) {
       event_timer_ = this->create_wall_timer(
@@ -124,105 +118,52 @@ private:
     fwrite(record_buf_.data(), 1, frame_bytes, ffmpeg_pipe_);
   }
 
-  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
+  void report_fps(double latency_ms)
   {
-    auto cb_start = std::chrono::steady_clock::now();
-
-    if (last_cb_end_.time_since_epoch().count() > 0) {
-      double gap_us = std::chrono::duration<double, std::micro>(
-        cb_start - last_cb_end_).count();
-      gap_sum_us_ += gap_us;
-    }
-
-    int w = static_cast<int>(msg->width);
-    int h = static_cast<int>(msg->height);
-
-    ensure_display(w, h);
-
-    auto guard = torch_buffer_backend::set_stream();
-    auto t0 = std::chrono::steady_clock::now();
-    const rosidl::Buffer<uint8_t> & data = msg->data;
-    at::Tensor frame;
-    if (data.get_backend_type() == "torch") {
-      frame = torch_buffer_backend::from_buffer(data).reshape({h, w, 4});
-    } else {
-      frame = torch::from_blob(
-        const_cast<uint8_t *>(data.data()), {h, w, 4}, torch::kByte);
-    }
-    auto t1 = std::chrono::steady_clock::now();
-
-    if (!headless_ && display_) {
-      display_->present(frame);
-    }
-
-    if (!record_path_.empty()) {
-      record_frame(frame, w, h);
-    }
-    auto t2 = std::chrono::steady_clock::now();
-
-    total_count_++;
-    std_msgs::msg::UInt32 count_msg;
-    count_msg.data = total_count_;
-    count_publisher_->publish(count_msg);
-    auto t3 = std::chrono::steady_clock::now();
-
-    double latency_ms = (this->now() - msg->header.stamp).seconds() * 1000.0;
-
-    std_msgs::msg::Float64 lat_msg;
-    lat_msg.data = latency_ms;
-    latency_publisher_->publish(lat_msg);
-
-    double from_buf_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
-    double display_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
-    double publish_us = std::chrono::duration<double, std::micro>(t3 - t2).count();
-    double total_cb_us = std::chrono::duration<double, std::micro>(t3 - cb_start).count();
-
-    from_buf_sum_us_ += from_buf_us;
-    display_sum_us_ += display_us;
-    publish_sum_us_ += publish_us;
-    total_cb_sum_us_ += total_cb_us;
-
     frame_count_++;
     auto now = std::chrono::steady_clock::now();
     float elapsed = std::chrono::duration<float>(now - fps_timer_).count();
-    if (elapsed >= 1.0f) {
-      float fps = frame_count_ / elapsed;
-      double n = frame_count_;
-      RCLCPP_INFO(this->get_logger(),
-        "Display: %.1f fps | latency: %.2f ms | cb: %.0f us "
-        "(from_buf: %.0f, display: %.0f, pub: %.0f, gap: %.0f) | %s",
-        fps, latency_ms,
-        total_cb_sum_us_ / n,
-        from_buf_sum_us_ / n, display_sum_us_ / n, publish_sum_us_ / n,
-        gap_sum_us_ / n,
-        headless_ ? "headless" : (use_cuda_ ? "cuda" : "cpu"));
-      if (display_ && display_->window()) {
-        char title[128];
-        double mb = img_width_ * img_height_ * 4 / 1e6;
-        snprintf(title, sizeof(title),
-          "Display -- %.1f fps | %dx%d (%.1f MB)",
-          fps, img_width_, img_height_, mb);
-        SDL_SetWindowTitle(display_->window(), title);
-      }
-      frame_count_ = 0;
-      fps_timer_ = now;
-      from_buf_sum_us_ = 0; display_sum_us_ = 0;
-      publish_sum_us_ = 0; total_cb_sum_us_ = 0; gap_sum_us_ = 0;
-    }
+    if (elapsed < 1.0f) return;
 
-    last_cb_end_ = std::chrono::steady_clock::now();
+    float fps = frame_count_ / elapsed;
+    RCLCPP_INFO(this->get_logger(), "Display: %.1f fps | latency: %.2f ms | %s",
+      fps, latency_ms,
+      headless_ ? "headless" : (use_cuda_ ? "cuda" : "cpu"));
+    if (display_ && display_->window()) {
+      char title[128];
+      snprintf(title, sizeof(title), "Display -- %.1f fps | %dx%d (%.1f MB)",
+        fps, img_width_, img_height_, img_width_ * img_height_ * 4 / 1e6);
+      SDL_SetWindowTitle(display_->window(), title);
+    }
+    frame_count_ = 0;
+    fps_timer_ = now;
+  }
+
+  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
+  {
+    ensure_display(static_cast<int>(msg->width), static_cast<int>(msg->height));
+
+    auto guard = torch_buffer_backend::set_stream();
+    int w = img_width_, h = img_height_;
+    const rosidl::Buffer<uint8_t> & data = msg->data;
+    at::Tensor frame = (data.get_backend_type() == "torch")
+      ? torch_buffer_backend::from_buffer(data).reshape({h, w, 4})
+      : torch::from_blob(const_cast<uint8_t *>(data.data()), {h, w, 4}, torch::kByte);
+
+    if (!headless_ && display_)
+      display_->present(frame);
+
+    if (!record_path_.empty())
+      record_frame(frame, img_width_, img_height_);
+
+    double latency_ms = (this->now() - msg->header.stamp).seconds() * 1000.0;
+    report_fps(latency_ms);
   }
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
-  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr count_publisher_;
-  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr latency_publisher_;
   rclcpp::TimerBase::SharedPtr event_timer_;
   int frame_count_;
-  uint32_t total_count_;
   std::chrono::steady_clock::time_point fps_timer_;
-  std::chrono::steady_clock::time_point last_cb_end_{};
-  double from_buf_sum_us_{0}, display_sum_us_{0}, publish_sum_us_{0};
-  double total_cb_sum_us_{0}, gap_sum_us_{0};
 
   std::string record_path_;
   FILE * ffmpeg_pipe_{nullptr};

@@ -4,9 +4,6 @@
 #include <torch/torch.h>
 #include <c10/cuda/CUDAStream.h>
 #include <cuda_runtime.h>
-#include <chrono>
-#include <cstring>
-#include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
@@ -18,10 +15,7 @@ class TunnelRenderer : public rclcpp::Node
 {
 public:
   explicit TunnelRenderer(const rclcpp::NodeOptions & options)
-  : Node("tunnel_renderer", options),
-    frame_count_(0),
-    t0_(std::chrono::steady_clock::now()),
-    fps_timer_(t0_)
+  : Node("tunnel_renderer", options)
   {
     this->declare_parameter<int>("publish_rate_ms", 1);
     this->declare_parameter<bool>("use_cuda", true);
@@ -50,26 +44,17 @@ public:
 private:
   void timer_callback()
   {
-    auto cb_start = std::chrono::steady_clock::now();
-    if (last_cb_end_.time_since_epoch().count() > 0) {
-      gap_sum_us_ += std::chrono::duration<double, std::micro>(
-        cb_start - last_cb_end_).count();
-    }
-
     auto guard = torch_buffer_backend::set_stream();
-    rclcpp::Time e2e_start = this->now();
 
     constexpr float dt = 1.0f / 60.0f;
 
-    auto t_alloc = std::chrono::steady_clock::now();
     sensor_msgs::msg::Image msg;
     if (use_cuda_) {
       msg = torch_buffer_backend::allocate_msg<sensor_msgs::msg::Image>(
         {height_, width_, 4}, torch::kByte, c10::kCUDA);
     }
-    auto t_alloc_end = std::chrono::steady_clock::now();
 
-    msg.header.stamp = e2e_start;
+    msg.header.stamp = this->now();
     msg.header.frame_id = "tunnel";
     msg.height = height_;
     msg.width = width_;
@@ -77,7 +62,6 @@ private:
     msg.step = width_ * 4;
     msg.is_bigendian = 0;
 
-    auto t_render = std::chrono::steady_clock::now();
     renderer_->update(dt);
     at::Tensor frame = renderer_->render_frame();
 
@@ -85,55 +69,22 @@ private:
       at::Tensor output = torch_buffer_backend::from_buffer(msg.data);
       output.copy_(frame);
     } else {
-      at::Tensor cpu_frame = frame.cpu().contiguous();
       size_t nbytes = static_cast<size_t>(height_) * width_ * 4;
       msg.data.resize(nbytes);
-      std::memcpy(msg.data.data(), cpu_frame.data_ptr(), nbytes);
+      cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+      cudaMemcpyAsync(msg.data.data(), frame.data_ptr(), nbytes,
+        cudaMemcpyDeviceToHost, stream);
+      cudaStreamSynchronize(stream);
     }
-    auto t_render_end = std::chrono::steady_clock::now();
 
-    auto t_pub = std::chrono::steady_clock::now();
     publisher_->publish(msg);
-    auto t_pub_end = std::chrono::steady_clock::now();
-
-    double alloc_us = std::chrono::duration<double, std::micro>(t_alloc_end - t_alloc).count();
-    double render_us = std::chrono::duration<double, std::micro>(t_render_end - t_render).count();
-    double pub_us = std::chrono::duration<double, std::micro>(t_pub_end - t_pub).count();
-    double total_us = std::chrono::duration<double, std::micro>(t_pub_end - cb_start).count();
-    alloc_sum_us_ += alloc_us;
-    render_sum_us_ += render_us;
-    pub_sum_us_ += pub_us;
-    total_sum_us_ += total_us;
-
-    frame_count_++;
-    auto now = std::chrono::steady_clock::now();
-    float elapsed = std::chrono::duration<float>(now - fps_timer_).count();
-    if (elapsed >= 1.0f) {
-      double n = frame_count_;
-      RCLCPP_INFO(this->get_logger(),
-        "Publishing: %.1f fps [%s] | cb: %.0f us (alloc: %.0f, render: %.0f, pub: %.0f, gap: %.0f)",
-        frame_count_ / elapsed, use_cuda_ ? "cuda" : "cpu",
-        total_sum_us_ / n, alloc_sum_us_ / n, render_sum_us_ / n,
-        pub_sum_us_ / n, gap_sum_us_ / n);
-      frame_count_ = 0;
-      fps_timer_ = now;
-      alloc_sum_us_ = 0; render_sum_us_ = 0; pub_sum_us_ = 0;
-      total_sum_us_ = 0; gap_sum_us_ = 0;
-    }
-    last_cb_end_ = std::chrono::steady_clock::now();
   }
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
-  int frame_count_;
-  std::chrono::steady_clock::time_point t0_;
-  std::chrono::steady_clock::time_point fps_timer_;
   bool use_cuda_;
   int width_, height_;
   std::unique_ptr<RobotArmRenderer> renderer_;
-  std::chrono::steady_clock::time_point last_cb_end_{};
-  double alloc_sum_us_{0}, render_sum_us_{0}, pub_sum_us_{0};
-  double total_sum_us_{0}, gap_sum_us_{0};
 };
 
 RCLCPP_COMPONENTS_REGISTER_NODE(TunnelRenderer)
