@@ -50,8 +50,7 @@ run_bench() {
     $RENDERER --ros-args \
         -p image_width:=$width \
         -p image_height:=$height \
-        -p use_cuda:=$use_cuda \
-        -p publish_rate_ms:=1 > /dev/null 2>&1 &
+        -p use_cuda:=$use_cuda > /dev/null 2>&1 &
     local rpid=$!
 
     $DISPLAY_NODE --ros-args -p headless:=true > "$logfile" 2>&1 &

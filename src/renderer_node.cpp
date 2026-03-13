@@ -19,12 +19,9 @@ public:
   explicit RendererNode(const rclcpp::NodeOptions & options)
   : Node("renderer", options)
   {
-    this->declare_parameter<int>("publish_rate_ms", 1);
     this->declare_parameter<bool>("use_cuda", true);
     this->declare_parameter<int>("image_width", 1920);
     this->declare_parameter<int>("image_height", 1080);
-    int rate_ms = this->get_parameter("publish_rate_ms").as_int();
-    if (rate_ms <= 0) rate_ms = 1;
     use_cuda_ = this->get_parameter("use_cuda").as_bool();
     width_ = this->get_parameter("image_width").as_int();
     height_ = this->get_parameter("image_height").as_int();
@@ -34,13 +31,13 @@ public:
     auto qos = rclcpp::QoS(1).reliable();
     publisher_ = this->create_publisher<sensor_msgs::msg::Image>("image", qos);
     timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(rate_ms),
+      std::chrono::milliseconds(1),
       std::bind(&RendererNode::timer_callback, this));
 
     RCLCPP_INFO(this->get_logger(),
-      "Robot arm renderer started (%dx%d, %.1f MB, timer=%dms, transport=%s)",
+      "Robot arm renderer started (%dx%d, %.1f MB, transport=%s)",
       width_, height_, width_ * height_ * 4 / 1e6,
-      rate_ms, use_cuda_ ? "cuda" : "cpu");
+      use_cuda_ ? "cuda" : "cpu");
   }
 
 private:
@@ -48,12 +45,10 @@ private:
   {
     auto guard = torch_buffer_backend::set_stream();
 
-    float dt = 1.0f / 60.0f;
-
     sensor_msgs::msg::Image msg;
     if (use_cuda_) {
       msg = torch_buffer_backend::allocate_msg<sensor_msgs::msg::Image>(
-        {height_, width_, 4}, torch::kByte, c10::kCUDA);
+        {height_, width_, 4}, torch::kByte);
     }
 
     msg.header.frame_id = "render";
@@ -63,12 +58,11 @@ private:
     msg.step = width_ * 4;
     msg.is_bigendian = 0;
 
-    renderer_->update(dt);
+    renderer_->update();
     at::Tensor frame = renderer_->render_frame();
 
     if (use_cuda_) {
-      at::Tensor output = torch_buffer_backend::from_buffer(msg.data);
-      output.copy_(frame);
+      torch_buffer_backend::to_buffer(frame, msg.data);
     } else {
       size_t nbytes = static_cast<size_t>(height_) * width_ * 4;
       msg.data.resize(nbytes);

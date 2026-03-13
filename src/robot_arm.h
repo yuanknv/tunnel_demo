@@ -6,7 +6,7 @@ class RobotArmRenderer {
 public:
     RobotArmRenderer(int width, int height, torch::Device device);
 
-    void update(float dt);
+    void update();
     torch::Tensor render_frame();
 
 private:

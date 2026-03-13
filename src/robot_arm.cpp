@@ -411,7 +411,8 @@ void RobotArmRenderer::start_move_to(float tx, float ty, float duration) {
 
 // ── Update (state machine) ──────────────────────────────────────────────
 
-void RobotArmRenderer::update(float dt) {
+void RobotArmRenderer::update() {
+    constexpr float dt = 1.0f / 60.0f;
     time_ += dt;
 
     if (gripper_opening_ < gripper_target_)
@@ -814,10 +815,9 @@ torch::Tensor RobotArmRenderer::render_frame() {
 
     auto frame = render_background();
     render_table(frame);
-    render_cubes(frame);  // non-held cubes
+    render_cubes(frame);
     render_arm(frame);
 
-    // Held cubes on top of arm
     for (int i = 0; i < 3; i++) {
         auto& c = cubes_[i];
         if (!c.held) continue;
@@ -825,7 +825,6 @@ torch::Tensor RobotArmRenderer::render_frame() {
         draw_local_color_pencil_box(frame, c.x, c.y, c.size, c.size, c.angle,
                                      c.r, c.g, c.b, 1.8f, PENCIL_DARK);
 
-        // White label on colored background
         auto& bmp = label_bmps_[i];
         int bh = bmp.size(0), bw = bmp.size(1);
         int lx = static_cast<int>(c.x) - bw / 2;
@@ -844,6 +843,5 @@ torch::Tensor RobotArmRenderer::render_frame() {
     frame = torch::clamp(frame, 0.0f, 255.0f);
     auto alpha_channel = torch::full({H_, W_, 1}, 255.0f, opts);
     frame = torch::cat({frame, alpha_channel}, 2);
-    frame = frame.to(torch::kUInt8).contiguous();
-    return frame;
+    return frame.to(torch::kUInt8);
 }
