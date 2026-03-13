@@ -1,3 +1,6 @@
+// Copyright 2026 NVIDIA Corporation
+// Licensed under the Apache License, Version 2.0
+
 #include "robot_arm.h"
 #include "font.h"
 #include <cmath>

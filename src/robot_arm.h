@@ -1,3 +1,6 @@
+// Copyright 2026 NVIDIA Corporation
+// Licensed under the Apache License, Version 2.0
+
 #pragma once
 #include <torch/torch.h>
 #include <array>
