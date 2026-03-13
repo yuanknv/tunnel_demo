@@ -15,14 +15,17 @@ DISPLAY_NODE="$WS_ROOT/build/torch_backend_demo/display_node"
 RUN_SECONDS=15
 
 BACKENDS="cuda cpu"
-PRESETS="fhd 2k 4k"
+PRESETS="fhd qhd 4k"
 
 resolve_resolution() {
     case "$1" in
-        fhd) echo "1920 1080" ;;
-        2k)  echo "2560 1440" ;;
-        4k)  echo "3840 2160" ;;
-        6k)  echo "5760 3240" ;;
+        fhd|FHD|1080p) echo "1920 1080" ;;
+        qhd|QHD|1440p) echo "2560 1440" ;;
+        4k|4K|2160p)   echo "3840 2160" ;;
+        *)
+            echo "Error: unknown resolution '$1'. Use: fhd, qhd, 4k" >&2
+            exit 1
+            ;;
     esac
 }
 
@@ -65,16 +68,15 @@ run_bench() {
 
     local last_line
     last_line=$(grep "Display:" "$logfile" | tail -1)
-    local fps latency
+    local fps
     fps=$(echo "$last_line" | grep -oP '[\d.]+(?= fps)')
-    latency=$(echo "$last_line" | grep -oP 'latency: \K[\d.]+')
 
-    echo "${width}x${height}|$backend|$fps|$latency"
+    echo "${width}x${height}|$backend|$fps"
     rm -f "$logfile"
     sleep 2
 }
 
-echo "resolution|transport|fps|latency_ms"
+echo "resolution|transport|fps"
 for preset in $PRESETS; do
     for backend in $BACKENDS; do
         run_bench "$backend" "$preset"

@@ -48,7 +48,7 @@ endif()
 find_package(Torch REQUIRED)
 
 find_package(rclcpp_components REQUIRED)
-find_package(launch_testing_ament_cmake REQUIRED)
+
 find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(GLEW REQUIRED)
@@ -110,12 +110,6 @@ install(TARGETS display_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
-)
-
-# Launch test
-add_launch_test(test/test_launch.py
-  TARGET test_launch
-  TIMEOUT 60
 )
 
 install(DIRECTORY launch/

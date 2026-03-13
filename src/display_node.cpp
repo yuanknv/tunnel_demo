@@ -43,9 +43,14 @@ public:
     max_win_h_ = static_cast<int>(this->get_parameter("max_window_height").as_int());
 
     auto qos = rclcpp::QoS(1).reliable();
+    rclcpp::SubscriptionOptions sub_opts;
+    if (use_cuda_) {
+      sub_opts.acceptable_buffer_backends = "any";
+    }
     subscription_ = this->create_subscription<sensor_msgs::msg::Image>(
       "image", qos,
-      std::bind(&DisplayNode::image_callback, this, std::placeholders::_1));
+      std::bind(&DisplayNode::image_callback, this, std::placeholders::_1),
+      sub_opts);
 
     if (!headless_) {
       event_timer_ = this->create_wall_timer(
@@ -126,7 +131,7 @@ private:
     fwrite(record_buf_.data(), 1, frame_bytes, ffmpeg_pipe_);
   }
 
-  void report_fps(double latency_ms)
+  void report_fps()
   {
     frame_count_++;
     auto now = std::chrono::steady_clock::now();
@@ -134,14 +139,13 @@ private:
     if (elapsed < 1.0f) return;
 
     float fps = frame_count_ / elapsed;
-    RCLCPP_INFO(this->get_logger(), "Display: %.1f fps | latency: %.2f ms | %s",
-      fps, latency_ms,
-      headless_ ? "headless" : (use_cuda_ ? "cuda" : "cpu"));
+    RCLCPP_INFO(this->get_logger(), "Display: %.1f fps | %s",
+      fps, headless_ ? "headless" : (use_cuda_ ? "cuda" : "cpu"));
     if (display_ && display_->window()) {
       char title[128];
-      snprintf(title, sizeof(title), "%s -- %.1f fps | latency %.1f ms | %dx%d (%.1f MB)",
+      snprintf(title, sizeof(title), "%s -- %.1f fps | %dx%d (%.1f MB)",
         use_cuda_ ? "CUDA" : "CPU",
-        fps, latency_ms, img_width_, img_height_, img_width_ * img_height_ * 4 / 1e6);
+        fps, img_width_, img_height_, img_width_ * img_height_ * 4 / 1e6);
       SDL_SetWindowTitle(display_->window(), title);
     }
     frame_count_ = 0;
@@ -165,8 +169,7 @@ private:
     if (!record_path_.empty())
       record_frame(frame, img_width_, img_height_);
 
-    double latency_ms = (this->now() - msg->header.stamp).seconds() * 1000.0;
-    report_fps(latency_ms);
+    report_fps();
   }
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
