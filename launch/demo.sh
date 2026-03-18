@@ -100,6 +100,18 @@ cleanup() {
         kill $ZENOH_PID 2>/dev/null
         wait $ZENOH_PID 2>/dev/null
     fi
+
+    if [[ "$COMPARE" == "true" && -n "$RECORD_PATH" ]]; then
+        CUDA_REC="${RECORD_PATH%.mp4}_cuda.mp4"
+        CPU_REC="${RECORD_PATH%.mp4}_cpu.mp4"
+        if [[ -f "$CUDA_REC" && -f "$CPU_REC" ]]; then
+            echo "Stitching recordings..."
+            ffmpeg -y -i "$CUDA_REC" -i "$CPU_REC" \
+                -filter_complex hstack "$RECORD_PATH" 2>/dev/null
+            rm -f "$CUDA_REC" "$CPU_REC"
+            echo "Saved: $RECORD_PATH"
+        fi
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -114,47 +126,59 @@ else
 fi
 
 if [[ "$COMPARE" == "true" ]]; then
-    HALF_W=960
-    HALF_H=540
+    WIN_W=960
+    WIN_H=540
 
-    echo "=== Side-by-side comparison mode ==="
+    SCREEN_RES="$(xrandr 2>/dev/null | grep -oP '\d+x\d+\+0\+0' | head -1)"
+    SCREEN_W="${SCREEN_RES%%x*}"
+    SCREEN_H="${SCREEN_RES#*x}"; SCREEN_H="${SCREEN_H%%+*}"
+    SCREEN_W="${SCREEN_W:-1920}"
+    SCREEN_H="${SCREEN_H:-1080}"
+    OFFSET_X=$(( (SCREEN_W - WIN_W * 2) / 2 ))
+    OFFSET_Y=$(( (SCREEN_H - WIN_H) / 2 ))
+
+    echo "=== Side-by-side comparison mode (two windows) ==="
     echo "  Resolution: ${WIDTH}x${HEIGHT} ($RESOLUTION)"
-    echo "  Window: ${HALF_W}x${HALF_H} each"
+    echo "  Window: ${WIN_W}x${WIN_H} each, offset (${OFFSET_X}, ${OFFSET_Y})"
 
-    echo "Starting CUDA renderer + display (left window)..."
     $RENDERER --ros-args \
         -r __ns:=/cuda \
         -p image_width:=$WIDTH \
         -p image_height:=$HEIGHT \
-        -p use_cuda:=true &
-    PIDS+=($!)
-
-    $DISPLAY_NODE --ros-args \
-        -r __ns:=/cuda \
         -p use_cuda:=true \
-        -p headless:=$HEADLESS \
-        -p max_window_width:=$HALF_W \
-        -p max_window_height:=$HALF_H \
-        -p window_x:=0 \
-        -p window_y:=0 &
+        --log-level WARN > /dev/null 2>&1 &
     PIDS+=($!)
 
-    echo "Starting CPU renderer + display (right window)..."
     $RENDERER --ros-args \
         -r __ns:=/cpu \
         -p image_width:=$WIDTH \
         -p image_height:=$HEIGHT \
-        -p use_cuda:=false &
+        -p use_cuda:=false \
+        --log-level WARN > /dev/null 2>&1 &
     PIDS+=($!)
 
-    $DISPLAY_NODE --ros-args \
-        -r __ns:=/cpu \
-        -p use_cuda:=false \
-        -p headless:=$HEADLESS \
-        -p max_window_width:=$HALF_W \
-        -p max_window_height:=$HALF_H \
-        -p window_x:=$HALF_W \
-        -p window_y:=0 &
+    CUDA_DISPLAY_ARGS="--ros-args -r __ns:=/cuda -p use_cuda:=true -p headless:=$HEADLESS"
+    CPU_DISPLAY_ARGS="--ros-args -r __ns:=/cpu -p use_cuda:=false -p headless:=$HEADLESS"
+
+    if [[ "$HEADLESS" == "false" ]]; then
+        CPU_X=$((OFFSET_X + WIN_W))
+        CUDA_DISPLAY_ARGS="$CUDA_DISPLAY_ARGS -p borderless:=true -p window_x:=$OFFSET_X -p window_y:=$OFFSET_Y"
+        CUDA_DISPLAY_ARGS="$CUDA_DISPLAY_ARGS -p max_window_width:=$WIN_W -p max_window_height:=$WIN_H"
+        CPU_DISPLAY_ARGS="$CPU_DISPLAY_ARGS -p borderless:=true -p window_x:=$CPU_X -p window_y:=$OFFSET_Y"
+        CPU_DISPLAY_ARGS="$CPU_DISPLAY_ARGS -p max_window_width:=$WIN_W -p max_window_height:=$WIN_H"
+    fi
+
+    if [[ -n "$RECORD_PATH" ]]; then
+        CUDA_REC="${RECORD_PATH%.mp4}_cuda.mp4"
+        CPU_REC="${RECORD_PATH%.mp4}_cpu.mp4"
+        CUDA_DISPLAY_ARGS="$CUDA_DISPLAY_ARGS -p record_path:=$CUDA_REC"
+        CPU_DISPLAY_ARGS="$CPU_DISPLAY_ARGS -p record_path:=$CPU_REC"
+        echo "  Recording to $RECORD_PATH (via stitch)"
+    fi
+
+    $DISPLAY_NODE $CUDA_DISPLAY_ARGS &
+    PIDS+=($!)
+    $DISPLAY_NODE $CPU_DISPLAY_ARGS &
     PIDS+=($!)
 
 else

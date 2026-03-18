@@ -52,6 +52,7 @@ find_package(rclcpp_components REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(GLEW REQUIRED)
+find_package(X11 REQUIRED)
 
 # Renderer node (publisher)
 add_library(renderer_component SHARED
@@ -85,6 +86,7 @@ install(TARGETS renderer_component
 add_library(display_component SHARED
   src/display_node.cpp
   src/display.cpp
+  src/font.cpp
 )
 target_compile_definitions(display_component PRIVATE USE_CUDA_GL_INTEROP)
 target_link_libraries(display_component
@@ -100,6 +102,7 @@ target_link_libraries(display_component
   OpenGL::GL
   SDL2::SDL2
   GLEW::GLEW
+  X11::X11
 )
 target_compile_options(display_component PRIVATE ${TORCH_CXX_FLAGS})
 rclcpp_components_register_node(display_component

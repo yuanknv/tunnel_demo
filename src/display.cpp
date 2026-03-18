@@ -5,6 +5,9 @@
 #include <GL/glew.h>
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <SDL_syswm.h>
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <algorithm>
 #include <iostream>
 #include <cstdio>
@@ -14,13 +17,35 @@
 #include <cuda_gl_interop.h>
 #endif
 
-// Shader sources
+static void disable_compositor_shadow(SDL_Window* window) {
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(window, &info)) return;
+    if (info.subsystem != SDL_SYSWM_X11) return;
+
+    Display* dpy = info.info.x11.display;
+    Window win = info.info.x11.window;
+
+    Atom gtk_frame = XInternAtom(dpy, "_GTK_FRAME_EXTENTS", False);
+    long extents[4] = {0, 0, 0, 0};
+    XChangeProperty(dpy, win, gtk_frame, XA_CARDINAL, 32,
+                    PropModeReplace, reinterpret_cast<unsigned char*>(extents), 4);
+
+    Atom kde_shadow = XInternAtom(dpy, "_KDE_NET_WM_SHADOW", False);
+    XDeleteProperty(dpy, win, kde_shadow);
+
+    XFlush(dpy);
+}
+
 static const char* vert_src = R"(
 #version 330 core
 const vec2 pos[4] = vec2[](vec2(-1,-1), vec2(1,-1), vec2(1,1), vec2(-1,1));
 const vec2 uv[4]  = vec2[](vec2(0,1), vec2(1,1), vec2(1,0), vec2(0,0));
 out vec2 v_uv;
-void main() { gl_Position = vec4(pos[gl_VertexID], 0, 1); v_uv = uv[gl_VertexID]; }
+void main() {
+    gl_Position = vec4(pos[gl_VertexID], 0, 1);
+    v_uv = uv[gl_VertexID];
+}
 )";
 
 static const char* frag_src = R"(
@@ -63,16 +88,16 @@ FrameDisplay::~FrameDisplay() {
 }
 
 bool FrameDisplay::init(int width, int height, bool headless, bool use_cuda, bool fullscreen,
-                        int max_win_w, int max_win_h, int win_x, int win_y) {
+                        int max_win_w, int max_win_h, int win_x, int win_y, bool borderless) {
     W_ = width;
     H_ = height;
-
-    int winW = W_, winH = H_;
+    winW_ = W_;
+    winH_ = H_;
     if (max_win_w > 0 && max_win_h > 0 && (W_ > max_win_w || H_ > max_win_h)) {
         float scale = std::min(static_cast<float>(max_win_w) / W_,
                                static_cast<float>(max_win_h) / H_);
-        winW = static_cast<int>(W_ * scale);
-        winH = static_cast<int>(H_ * scale);
+        winW_ = static_cast<int>(W_ * scale);
+        winH_ = static_cast<int>(H_ * scale);
     }
 
     int pos_x = (win_x >= 0) ? win_x : SDL_WINDOWPOS_CENTERED;
@@ -84,13 +109,16 @@ bool FrameDisplay::init(int width, int height, bool headless, bool use_cuda, boo
         return true;
     }
 
+    bool no_shadow = (win_x >= 0);
+    if (no_shadow)
+        SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
+
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
         mode_ = DisplayMode::Headless;
-        return true; // fall back to headless
+        return true;
     }
 
-    // Try OpenGL first
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -98,25 +126,26 @@ bool FrameDisplay::init(int width, int height, bool headless, bool use_cuda, boo
 
     Uint32 win_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN;
     if (fullscreen) win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    if (borderless) win_flags |= SDL_WINDOW_BORDERLESS;
 
     window_ = SDL_CreateWindow("Robot Arm Demo",
         pos_x, pos_y,
-        winW, winH, win_flags);
+        winW_, winH_, win_flags);
 
     if (!window_) {
         std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
-        // Try software fallback
         Uint32 sw_flags = SDL_WINDOW_SHOWN;
         if (fullscreen) sw_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+        if (borderless) sw_flags |= SDL_WINDOW_BORDERLESS;
         window_ = SDL_CreateWindow("Robot Arm Demo",
             pos_x, pos_y,
-            winW, winH, sw_flags);
+            winW_, winH_, sw_flags);
         if (!window_) {
             std::cerr << "SDL software window also failed" << std::endl;
             mode_ = DisplayMode::Headless;
             return true;
         }
-        // Software SDL path
+        if (no_shadow) disable_compositor_shadow(window_);
         mode_ = DisplayMode::SoftwareSDL;
         sdl_renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);
         sdl_texture_ = SDL_CreateTexture((SDL_Renderer*)sdl_renderer_,
@@ -124,6 +153,8 @@ bool FrameDisplay::init(int width, int height, bool headless, bool use_cuda, boo
         std::cout << "Display mode: SDL Software" << std::endl;
         return true;
     }
+
+    if (no_shadow) disable_compositor_shadow(window_);
 
     gl_ctx_ = SDL_GL_CreateContext(window_);
     if (!gl_ctx_) {
@@ -163,7 +194,6 @@ bool FrameDisplay::init(int width, int height, bool headless, bool use_cuda, boo
 }
 
 void FrameDisplay::init_gl_resources() {
-    // Compile shaders
     GLuint vs = compile_shader(GL_VERTEX_SHADER, vert_src);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, frag_src);
     shader_program_ = glCreateProgram();
@@ -181,10 +211,8 @@ void FrameDisplay::init_gl_resources() {
         std::cerr << "Shader link error: " << log << std::endl;
     }
 
-    // Empty VAO (vertex data is generated in shader)
     glGenVertexArrays(1, &vao_);
 
-    // Immutable texture
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, W_, H_);
@@ -197,7 +225,6 @@ void FrameDisplay::init_gl_resources() {
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
         glBufferData(GL_PIXEL_UNPACK_BUFFER, W_ * H_ * 4, nullptr, GL_STREAM_DRAW);
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-
         cudaGraphicsResource* resource;
         cudaGraphicsGLRegisterBuffer(&resource, pbo_, cudaGraphicsMapFlagsWriteDiscard);
         cuda_pbo_ = resource;
@@ -221,17 +248,14 @@ void FrameDisplay::present(const torch::Tensor& frame) {
 
 void FrameDisplay::present_gl(const torch::Tensor& frame) {
     glBindTexture(GL_TEXTURE_2D, tex_);
-
 #ifdef USE_CUDA_GL_INTEROP
     if (mode_ == DisplayMode::CudaGL && frame.is_cuda()) {
         cudaGraphicsResource* resource = (cudaGraphicsResource*)cuda_pbo_;
         cudaGraphicsMapResources(1, &resource, 0);
-        void* d_ptr;
-        size_t sz;
+        void* d_ptr; size_t sz;
         cudaGraphicsResourceGetMappedPointer(&d_ptr, &sz, resource);
         cudaMemcpy(d_ptr, frame.data_ptr(), W_ * H_ * 4, cudaMemcpyDeviceToDevice);
         cudaGraphicsUnmapResources(1, &resource, 0);
-
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W_, H_,
                         GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, 0);
@@ -244,19 +268,17 @@ void FrameDisplay::present_gl(const torch::Tensor& frame) {
                         GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV,
                         cpu_frame.data_ptr<uint8_t>());
     }
-
     draw_fullscreen_quad();
     SDL_GL_SwapWindow(window_);
 }
 
 void FrameDisplay::present_sdl_software(const torch::Tensor& frame) {
-    // BGRA -> ARGB for SDL: reorder channels [B,G,R,A] -> [A,R,G,B]
     auto cpu = frame.to(torch::kCPU).contiguous();
     auto argb = torch::stack({
-        cpu.select(2, 3),  // A
-        cpu.select(2, 2),  // R
-        cpu.select(2, 1),  // G
-        cpu.select(2, 0)   // B
+        cpu.select(2, 3),
+        cpu.select(2, 2),
+        cpu.select(2, 1),
+        cpu.select(2, 0)
     }, 2).contiguous();
 
     SDL_UpdateTexture((SDL_Texture*)sdl_texture_, nullptr,
@@ -268,10 +290,10 @@ void FrameDisplay::present_sdl_software(const torch::Tensor& frame) {
 
 void FrameDisplay::draw_fullscreen_quad() {
     glClear(GL_COLOR_BUFFER_BIT);
-    glUseProgram(shader_program_);
-    glBindVertexArray(vao_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex_);
+    glUseProgram(shader_program_);
+    glBindVertexArray(vao_);
     glUniform1i(glGetUniformLocation(shader_program_, "tex"), 0);
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 }
@@ -289,7 +311,6 @@ bool FrameDisplay::poll_events() {
 void FrameDisplay::save_ppm(const torch::Tensor& frame_bgra, const std::string& path) {
     auto cpu = frame_bgra.to(torch::kCPU).contiguous();
     int H = cpu.size(0), W = cpu.size(1);
-    // BGRA -> RGB
     auto rgb = torch::stack({cpu.select(2,2), cpu.select(2,1), cpu.select(2,0)}, 2)
                .contiguous();
     FILE* f = fopen(path.c_str(), "wb");
