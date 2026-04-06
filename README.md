@@ -19,16 +19,25 @@ The demo exercises the full buffer-aware pub/sub pipeline:
 ## Dependencies
 
 - [rcl_buffer_ws](https://github.com/yuanknv/ros2) workspace with `pixi`
-- `cuda_buffer_backend` and `torch_buffer_backend` packages
-- CUDA toolkit, libtorch, SDL2, GLEW, OpenGL
+- LibTorch (see [torch_buffer_backend prerequisites](https://github.com/yuanknv/torch_buffer_backend#prerequisites))
+- CUDA toolkit, SDL2, GLEW, OpenGL
 
 ## Build
 
-From the workspace root:
+Build order matters -- device backends must be installed before
+`torch_buffer` so CUDA support is compiled in:
 
 ```bash
+# 1. Build CUDA device backend
+pixi run build cuda_buffer_backend
+
+# 2. Build the demo
 pixi run build torch_backend_demo
 ```
+
+The demo discovers all installed buffer backend plugins automatically
+via `source install/setup.sh`. If `cuda_buffer_backend` is installed,
+the CUDA IPC path is used; otherwise it falls back to CPU.
 
 ## Run
 
@@ -56,11 +65,11 @@ pixi run bash src/torch_backend_demo/launch/demo.sh --compare --resolution qhd
 
 ## Benchmark results
 
-Measured on a single machine (inter-process, rmw_zenoh_cpp, headless mode):
+Measured on a single machine (inter-process, headless mode):
 
 - **GPU**: NVIDIA GeForce RTX 3090 (24 GB)
 - **CPU**: Intel Core i9-10850K @ 3.60 GHz
-- **RMW**: rmw_zenoh_cpp
+- **RMW**: rmw_fastrtps_cpp
 
 To reproduce, build the workspace and run:
 
@@ -70,14 +79,14 @@ pixi run bash src/torch_backend_demo/launch/bench_all.sh
 
 | Resolution | Image Size | Transport | FPS | Speedup |
 |---|---|---|---:|---:|
-| 1920x1080 | 7.9 MB | CUDA | 101.2 | 3.5x |
-| 1920x1080 | 7.9 MB | CPU | 28.9 | -- |
-| 2560x1440 | 14.1 MB | CUDA | 102.2 | 7.9x |
-| 2560x1440 | 14.1 MB | CPU | 12.9 | -- |
-| 3840x2160 | 31.6 MB | CUDA | 71.2 | 11.9x |
-| 3840x2160 | 31.6 MB | CPU | 6.0 | -- |
+| 1920x1080 | 7.9 MB | CUDA | 116.6 | 3.3x |
+| 1920x1080 | 7.9 MB | CPU | 35.5 | -- |
+| 2560x1440 | 14.1 MB | CUDA | 90.6 | 4.3x |
+| 2560x1440 | 14.1 MB | CPU | 21.3 | -- |
+| 3840x2160 | 31.6 MB | CUDA | 59.5 | 5.8x |
+| 3840x2160 | 31.6 MB | CPU | 10.3 | -- |
 
-The CUDA path maintains high throughput across resolutions because zero-copy IPC transfers only a handle, not the pixel data. The CPU path must copy frames from GPU to host and serialise them through the middleware, so throughput drops as image size grows. At 4K (31.6 MB/frame) the CUDA backend is ~12x faster than the raw CPU path.
+The CUDA path maintains high throughput across resolutions because zero-copy IPC transfers only a handle, not the pixel data. The CPU path must copy frames from GPU to host and serialise them through the middleware, so throughput drops as image size grows. At 4K (31.6 MB/frame) the CUDA backend is ~6x faster than the raw CPU path.
 
 ## License
 
